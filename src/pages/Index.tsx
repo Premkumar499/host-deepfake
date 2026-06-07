@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Mic, Upload, FileAudio, Loader2, AlertCircle, CheckCircle2, Bot, User, Info } from "lucide-react";
+import { Mic, Upload, FileAudio, Loader2, AlertCircle, CheckCircle2, Bot, User, Info, X, RotateCcw, Square } from "lucide-react";
 import heroBg from "@/assets/hero-bg.jpg";
 
 // Use your own Vercel API endpoint
@@ -9,11 +9,22 @@ const API_URL = import.meta.env.PROD
 const API_KEY = "sk_test_123456789";
 const LANGUAGES = ["Tamil", "English", "Hindi", "Malayalam", "Telugu"];
 
+// Faster than readAsDataURL — no prefix string, no split, direct ArrayBuffer → base64
 const convertToBase64 = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve((reader.result as string).split(",")[1]);
+    reader.readAsArrayBuffer(file);
+    reader.onload = () => {
+      const buffer = reader.result as ArrayBuffer;
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      // Process in 8KB chunks to avoid call stack overflow on large files
+      const chunkSize = 8192;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      resolve(btoa(binary));
+    };
     reader.onerror = reject;
   });
 
@@ -31,10 +42,26 @@ export default function VoiceDetector() {
   const [base64Input, setBase64Input] = useState("");
   const [inputMode, setInputMode] = useState<"file" | "base64">("file");
   const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState<"encoding" | "analyzing">("encoding");
   const [result, setResult] = useState<ResultData | null>(null);
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+    setLoading(false);
+    setError("Analysis stopped.");
+  };
+
+  const handleReset = () => {
+    setAudioFile(null);
+    setBase64Input("");
+    setResult(null);
+    setError("");
+    if (fileRef.current) fileRef.current.value = "";
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,19 +72,25 @@ export default function VoiceDetector() {
     if (inputMode === "base64" && !base64Input.trim()) return setError("Please paste a Base64 string.");
 
     setLoading(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
+      setLoadingStep("encoding");
       const audioBase64 = inputMode === "file" ? await convertToBase64(audioFile!) : base64Input.trim();
+      setLoadingStep("analyzing");
       const res = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
         body: JSON.stringify({ language, audioFormat: "mp3", audioBase64 }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       setResult(await res.json());
     } catch (err: any) {
-      setError(err.message || "Request failed. Please try again.");
+      if (err.name !== "AbortError") setError(err.message || "Request failed. Please try again.");
     } finally {
       setLoading(false);
+      abortRef.current = null;
     }
   };
 
@@ -165,6 +198,14 @@ export default function VoiceDetector() {
                       <p className="font-medium text-foreground">{audioFile.name}</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">{(audioFile.size / 1024).toFixed(1)} KB</p>
                     </div>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleReset(); }}
+                      className="mt-1 flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-destructive/50 hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      Remove file
+                    </button>
                   </div>
                 ) : (
                   <div className="flex flex-col items-center gap-3">
@@ -195,21 +236,33 @@ export default function VoiceDetector() {
               </div>
             )}
 
-            {/* Submit */}
-            <button
-              type="submit"
-              disabled={loading}
-              className="flex items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3.5 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:shadow-md active:scale-[0.97] disabled:opacity-60 disabled:pointer-events-none"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin-slow" />
-                  Analyzing Audio…
-                </>
-              ) : (
-                "Analyze Audio"
+            {/* Submit / Stop */}
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3.5 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:shadow-md active:scale-[0.97] disabled:opacity-60 disabled:pointer-events-none"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {loadingStep === "encoding" ? "Preparing audio…" : "Analyzing…"}
+                  </>
+                ) : (
+                  "Analyze Audio"
+                )}
+              </button>
+              {loading && (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  className="flex items-center gap-1.5 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3.5 text-sm font-medium text-destructive transition-all hover:bg-destructive/20 active:scale-[0.97]"
+                >
+                  <Square className="h-4 w-4 fill-destructive" />
+                  Stop
+                </button>
               )}
-            </button>
+            </div>
           </form>
         </div>
 
@@ -218,7 +271,16 @@ export default function VoiceDetector() {
           <div className="glass-card animate-fade-up w-full rounded-2xl p-8">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-foreground">Analysis Overview</h2>
-              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Re-analyze
+                </button>
+                <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
                 isAI
                   ? "bg-destructive/10 text-destructive"
                   : "bg-success/10 text-success"
@@ -226,6 +288,7 @@ export default function VoiceDetector() {
                 {isAI ? <Bot className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
                 {isAI ? "AI Generated" : "Human Voice"}
               </span>
+              </div>
             </div>
 
             {confPercent != null && (

@@ -13,9 +13,10 @@ export default defineConfig(({ mode }) => ({
     },
     // Proxy API requests during development
     proxy: {
-      '/api': {
-        target: 'http://localhost:3000',
+      '/api/voice-detection': {
+        target: 'https://prem678-ai-buildathon.hf.space',
         changeOrigin: true,
+        secure: false,
       },
     },
   },
